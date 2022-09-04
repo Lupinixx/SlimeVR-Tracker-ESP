@@ -35,6 +35,8 @@
 #define DATA_TYPE_NORMAL 1
 #define DATA_TYPE_CORRECTION 2
 
+#define SENSORS_GRAVITY_EARTH 9.80665
+
 class Sensor
 {
 public:

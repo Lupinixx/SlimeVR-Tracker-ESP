@@ -27,6 +27,19 @@
 #include "sensor.h"
 #include <MPU6050.h>
 
+// 131 LSB/deg/s = 250 deg/s
+#define TYPICAL_GYRO_SENSITIVITY 131
+// 16384 LSB/G = 2G
+#define TYPICAL_ACCEL_SENSITIVITY 16384.
+
+//Packet size of the fifo packets. This is dependent on the
+#define FIFO_PACKET_SIZE 12
+
+// Gyro scale conversion steps: LSB/°/s -> °/s -> step/°/s -> step/rad/s
+constexpr float GSCALE = ((32768. / TYPICAL_GYRO_SENSITIVITY) / 32768.) * (PI / 180.0);
+// Accel scale conversion steps: LSB/G -> G -> m/s^2
+constexpr float ASCALE = ((32768. / TYPICAL_ACCEL_SENSITIVITY) / 32768.) * SENSORS_GRAVITY_EARTH;
+
 class MPU6050Sensor : public Sensor
 {
 public:
@@ -35,21 +48,17 @@ public:
     void motionSetup() override final;
     void motionLoop() override final;
     void startCalibration(int calibrationType) override final;
+    bool isUpsideDownAndFlippedBack();
 
 private:
     MPU6050 imu{};
-    Quaternion rawQuat{};
-    // MPU dmp control/status vars
-    bool dmpReady = false;    // set true if DMP init was successful
+    uint8_t fifoPacket[1024]; // Buffer to store whole mpu fifo buffer in to proccess.
+    float q[4]{1.0f, 0.0f, 0.0f, 0.0f}; // for raw filter
     uint8_t mpuIntStatus;     // holds actual interrupt status byte from MPU
     uint8_t devStatus;        // return status after each device operation (0 = success, !0 = error)
-    uint16_t packetSize;      // expected DMP packet size (default is 42 bytes)
-    uint16_t fifoCount;       // count of all bytes currently in FIFO
-    uint8_t fifoBuffer[64]{}; // FIFO storage buffer
+    
 
-#ifndef IMU_MPU6050_RUNTIME_CALIBRATION
     SlimeVR::Configuration::MPU6050CalibrationConfig m_Calibration;
-#endif
 };
 
 #endif

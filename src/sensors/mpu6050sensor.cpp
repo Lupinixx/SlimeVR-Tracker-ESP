@@ -23,17 +23,12 @@
 
 #include "globals.h"
 
-#ifdef IMU_MPU6050_RUNTIME_CALIBRATION
-#include "MPU6050_6Axis_MotionApps_V6_12.h"
-#else
-#include "MPU6050_6Axis_MotionApps20.h"
-#endif
-
 #include "mpu6050sensor.h"
 #include "network/network.h"
 #include <i2cscan.h>
 #include "calibration.h"
 #include "GlobalVars.h"
+#include "vqf.h"
 
 void MPU6050Sensor::motionSetup()
 {
@@ -46,14 +41,30 @@ void MPU6050Sensor::motionSetup()
 
     m_Logger.info("Connected to MPU6050 (reported device ID 0x%02x) at address 0x%02x", imu.getDeviceID(), addr);
 
-#ifndef IMU_MPU6050_RUNTIME_CALIBRATION
+    working = true;
+
+    // Flip imu upside down, turn on, wait 5 seconds, then flip back up to start callibration
+    // if (isUpsideDownAndFlippedBack)
+    // {
+    //     startCalibration(0);
+    // }
+
     // Initialize the configuration
     {
         SlimeVR::Configuration::CalibrationConfig sensorCalibration = configuration.getCalibration(sensorId);
         // If no compatible calibration data is found, the calibration data will just be zero-ed out
-        switch (sensorCalibration.type) {
+        switch (sensorCalibration.type)
+        {
         case SlimeVR::Configuration::CalibrationConfigType::MPU6050:
             m_Calibration = sensorCalibration.data.mpu6050;
+            // Setting the gyro offset from calibration
+            imu.setXGyroOffset(m_Calibration.G_off[0]);
+            imu.setYGyroOffset(m_Calibration.G_off[1]);
+            imu.setZGyroOffset(m_Calibration.G_off[2]);
+            // Setting the accel bias from calibration
+            imu.setXAccelOffset(m_Calibration.A_B[0]);
+            imu.setYAccelOffset(m_Calibration.A_B[1]);
+            imu.setZAccelOffset(m_Calibration.A_B[2]);
             break;
 
         case SlimeVR::Configuration::CalibrationConfigType::NONE:
@@ -66,142 +77,139 @@ void MPU6050Sensor::motionSetup()
             m_Logger.info("Calibration is advised");
         }
     }
-#endif
 
-    devStatus = imu.dmpInitialize();
+    //Enable digital low pass filter. Gyro and accel now output at 1Khz. Not sure yet which mode would be best. Higher would mean better low pass filter, but also higher delay. max = 6, off = 0 (at 0 the gyro can update at 8khz.)
+    imu.setDLPFMode(2);
 
-    if (devStatus == 0)
-    {
-#ifdef IMU_MPU6050_RUNTIME_CALIBRATION
-        // We don't have to manually calibrate if we are using the dmp's automatic calibration
-#else  // IMU_MPU6050_RUNTIME_CALIBRATION
+    // Enable FIFO, and gyro + accel to write to FIFO
+    imu.setFIFOEnabled(true);
+    imu.setXGyroFIFOEnabled(true);
+    imu.setYGyroFIFOEnabled(true);
+    imu.setZGyroFIFOEnabled(true);
+    imu.setAccelFIFOEnabled(true);
+    imu.setRate(10);
 
-        m_Logger.debug("Performing startup calibration of accel and gyro...");
-        // Do a quick and dirty calibration. As the imu warms up the offsets will change a bit, but this will be good-enough
-        delay(1000); // A small sleep to give the users a chance to stop it from moving
+    // Setup VQF filter
+    // vqf = vqf.VQF(1 / 8000, 1 / 1000, 0);
 
-        imu.CalibrateGyro(6);
-        imu.CalibrateAccel(6);
-        imu.PrintActiveOffsets();
-#endif // IMU_MPU6050_RUNTIME_CALIBRATION
-
-        ledManager.pattern(50, 50, 5);
-
-        // turn on the DMP, now that it's ready
-        m_Logger.debug("Enabling DMP...");
-        imu.setDMPEnabled(true);
-
-        // TODO: Add interrupt support
-        // mpuIntStatus = imu.getIntStatus();
-
-        // set our DMP Ready flag so the main loop() function knows it's okay to use it
-        m_Logger.debug("DMP ready! Waiting for first interrupt...");
-        dmpReady = true;
-
-        // get expected DMP packet size for later comparison
-        packetSize = imu.dmpGetFIFOPacketSize();
-
-        working = true;
-        configured = true;
-    }
-    else
-    {
-        // ERROR!
-        // 1 = initial memory load failed
-        // 2 = DMP configuration updates failed
-        // (if it's going to break, usually the code will be 1)
-        m_Logger.error("DMP Initialization failed (code %d)", devStatus);
-    }
+    configured = true;
 }
 
 void MPU6050Sensor::motionLoop()
 {
-#if ENABLE_INSPECTION
-    {
-        int16_t rX, rY, rZ, aX, aY, aZ;
-        imu.getRotation(&rX, &rY, &rZ);
-        imu.getAcceleration(&aX, &aY, &aZ);
+    uint16_t fifoCount = imu.getFIFOCount();
+    uint16_t packetCount = fifoCount / FIFO_PACKET_SIZE;
+    m_Logger.debug("FIFO size: %d", fifoCount);
 
-        Network::sendInspectionRawIMUData(sensorId, rX, rY, rZ, 255, aX, aY, aZ, 255, 0, 0, 0, 255);
-    }
-#endif
 
-    if (!dmpReady)
+    //Fifo buffer is full, assuming overflow and resetting...
+    if(fifoCount == sizeof(fifoPacket))
+    { 
+        m_Logger.info("FIFO buffer is full, assuming overflow and resetting....");
+        imu.resetFIFO();
         return;
-
-    if (imu.dmpGetCurrentFIFOPacket(fifoBuffer))
-    {
-        imu.dmpGetQuaternion(&rawQuat, fifoBuffer);
-        quaternion.set(-rawQuat.y, rawQuat.x, rawQuat.z, rawQuat.w);
-        quaternion *= sensorOffset;
-
-#if ENABLE_INSPECTION
-        {
-            Network::sendInspectionFusedIMUData(sensorId, quaternion);
-        }
-#endif
-
-        if (!OPTIMIZE_UPDATES || !lastQuatSent.equalsWithEpsilon(quaternion))
-        {
-            newData = true;
-            lastQuatSent = quaternion;
-        }
     }
+
+    if(fifoCount < FIFO_PACKET_SIZE) return; //Nothing to read yet in the fifo buffer
+
+    uint16_t ax, ay,az, gx, gy, gz;
+    imu.getFIFOBytes(fifoPacket, fifoCount);
+    m_Logger.debug("currently %d packets in the fifo", packetCount);
+
+    for(uint16_t i = 0; i < fifoCount;)
+    {
+        ax = (int16_t)fifoPacket[i]  << 8  | (int16_t)fifoPacket[i + 1];
+        ay = (int16_t)fifoPacket[i +2]  << 8  | (int16_t)fifoPacket[i + 3];
+        az = (int16_t)fifoPacket[i + 4]  << 8  | (int16_t)fifoPacket[i + 5];
+        gx = (int16_t)fifoPacket[i + 6]  << 8  | (int16_t)fifoPacket[i + 7];
+        gy = (int16_t)fifoPacket[i + 8]  << 8  | (int16_t)fifoPacket[i + 9];
+        gz = (int16_t)fifoPacket[i + 10] << 8  | (int16_t)fifoPacket[i + 11];
+        m_Logger.debug("Read FIFO packet. ax:%d ay:%d az:%d gx:%d gy:%d gz:%d", ax, ay, az, gx, gy,gz);
+        i+=FIFO_PACKET_SIZE;
+
+        // if (!OPTIMIZE_UPDATES || !lastQuatSent.equalsWithEpsilon(quaternion))
+        // {
+        //     newData = true;
+        //     lastQuatSent = quaternion;
+        // }
+
+    }
+
+
 }
 
-void MPU6050Sensor::startCalibration(int calibrationType) {
+void MPU6050Sensor::startCalibration(int calibrationType)
+{
     ledManager.on();
 
-#ifdef IMU_MPU6050_RUNTIME_CALIBRATION
-    m_Logger.info("MPU is using automatic runtime calibration. Place down the device and it should automatically calibrate after a few seconds");
-
-    // Lie to the server and say we've calibrated
-    switch (calibrationType)
-    {
-    case CALIBRATION_TYPE_INTERNAL_ACCEL:
-        Network::sendCalibrationFinished(CALIBRATION_TYPE_INTERNAL_ACCEL, 0);
-        break;
-    case CALIBRATION_TYPE_INTERNAL_GYRO:
-        Network::sendCalibrationFinished(CALIBRATION_TYPE_INTERNAL_GYRO, 0);//was CALIBRATION_TYPE_INTERNAL_GYRO for some reason? there wasn't a point to this switch
-        break;
-    }
-#else //!IMU_MPU6050_RUNTIME_CALIBRATION
     m_Logger.info("Put down the device and wait for baseline gyro reading calibration");
     delay(2000);
-
-    imu.setDMPEnabled(false);
+    ledManager.off();
+    // imu.setDMPEnabled(false);
     imu.CalibrateGyro(6);
     imu.CalibrateAccel(6);
-    imu.setDMPEnabled(true);
+    // imu.setDMPEnabled(true);
 
     m_Logger.debug("Gathered baseline gyro reading");
+    ledManager.blink(50);
+    ledManager.blink(50);
     m_Logger.debug("Starting offset finder");
-    switch (calibrationType)
-    {
-    case CALIBRATION_TYPE_INTERNAL_ACCEL:
-        imu.CalibrateAccel(10);
-        Network::sendCalibrationFinished(CALIBRATION_TYPE_INTERNAL_ACCEL, 0);//doesn't send calibration data anymore, has that been depricated in server?
-        m_Calibration.A_B[0] = imu.getXAccelOffset();
-        m_Calibration.A_B[1] = imu.getYAccelOffset();
-        m_Calibration.A_B[2] = imu.getZAccelOffset();
-        break;
-    case CALIBRATION_TYPE_INTERNAL_GYRO:
-        imu.CalibrateGyro(10);
-        Network::sendCalibrationFinished(CALIBRATION_TYPE_INTERNAL_GYRO, 0);//doesn't send calibration data anymore
-        m_Calibration.G_off[0] = imu.getXGyroOffset();
-        m_Calibration.G_off[1] = imu.getYGyroOffset();
-        m_Calibration.G_off[2] = imu.getZGyroOffset();
-        break;
-    }
 
+    // Calibrating accel
+    imu.CalibrateAccel(10);
+    m_Calibration.A_B[0] = imu.getXAccelOffset();
+    m_Calibration.A_B[1] = imu.getYAccelOffset();
+    m_Calibration.A_B[2] = imu.getZAccelOffset();
+
+    ledManager.blink(50);
+    ledManager.blink(50);
+
+    // Calibrating gyro
+    imu.CalibrateGyro(10);
+    m_Calibration.G_off[0] = imu.getXGyroOffset();
+    m_Calibration.G_off[1] = imu.getYGyroOffset();
+    m_Calibration.G_off[2] = imu.getZGyroOffset();
+
+    ledManager.blink(50);
+    ledManager.blink(50);
+    ledManager.blink(50);
+    ledManager.blink(50);
     SlimeVR::Configuration::CalibrationConfig calibration;
     calibration.type = SlimeVR::Configuration::CalibrationConfigType::MPU6050;
     calibration.data.mpu6050 = m_Calibration;
     configuration.setCalibration(sensorId, calibration);
     configuration.save();
 
+    ledManager.blink(50);
+    ledManager.blink(50);
+    ledManager.blink(50);
+    ledManager.blink(50);
+
     m_Logger.info("Calibration finished");
-#endif // !IMU_MPU6050_RUNTIME_CALIBRATION
 
     ledManager.off();
+}
+
+bool MPU6050Sensor::isUpsideDownAndFlippedBack()
+{
+
+    // turn on while flip back to calibrate. then, flip again after 5 seconds.
+    int16_t ax, ay, az;
+    imu.getAcceleration(&ax, &ay, &az);
+    float g_az = (float)az / TYPICAL_ACCEL_SENSITIVITY; // For 2G sensitivity
+    if (g_az < -0.75f)
+    {
+        ledManager.on();
+        m_Logger.info("Flip front to confirm start calibration");
+        delay(5000);
+        ledManager.off();
+
+        imu.getAcceleration(&ax, &ay, &az);
+        g_az = (float)az / TYPICAL_ACCEL_SENSITIVITY;
+        if (g_az > 0.75f)
+        {
+            return true;
+        }
+    }
+    return false;
 }
