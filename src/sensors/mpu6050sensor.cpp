@@ -101,7 +101,8 @@ void MPU6050Sensor::motionSetup()
     imu.setYGyroFIFOEnabled(true);
     imu.setZGyroFIFOEnabled(true);
     imu.setAccelFIFOEnabled(true);
-    imu.setRate(1);
+    imu.setFullScaleGyroRange(0);
+    imu.setRate(sampleRateDevicer);
 
     configured = true;
 }
