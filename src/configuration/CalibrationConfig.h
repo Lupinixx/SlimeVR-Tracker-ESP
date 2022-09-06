@@ -43,6 +43,7 @@ namespace SlimeVR {
         struct MPU6050CalibrationConfig {
             // accelerometer offsets and correction matrix
             float A_B[3];
+            float A_Ainv[3][3];
 
             // raw offsets, determined from gyro at rest
             float G_off[3];

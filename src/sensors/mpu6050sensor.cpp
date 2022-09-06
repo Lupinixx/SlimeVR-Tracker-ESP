@@ -101,7 +101,7 @@ void MPU6050Sensor::motionSetup()
     }
 
     // Enable digital low pass filter. Gyro and accel now output at 1Khz. Not sure yet which mode would be best. Higher would mean better low pass filter, but also higher delay. max = 6, off = 0 (at 0 the gyro can update at 8khz.)
-    imu.setDLPFMode(2);
+    imu.setDLPFMode(6);
 
     // Enable FIFO, and gyro + accel to write to FIFO
     imu.setFIFOEnabled(true);
@@ -131,7 +131,7 @@ void MPU6050Sensor::motionLoop()
     if (fifoCount < FIFO_PACKET_SIZE)
         return; // Nothing to read yet in the fifo buffer
 
-    uint16_t ax, ay, az, gx, gy, gz;
+    int16_t ax, ay, az, gx, gy, gz;
     // m_Logger.debug("currently %d packets in the fifo", packetCount);
 
     for (uint16_t outerI = 0; outerI < fifoCount;)
