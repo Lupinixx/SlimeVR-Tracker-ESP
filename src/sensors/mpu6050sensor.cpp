@@ -21,13 +21,21 @@
     THE SOFTWARE.
 */
 
-#include "globals.h"
-
 #include "mpu6050sensor.h"
-#include "network/network.h"
-#include <i2cscan.h>
-#include "calibration.h"
-#include "GlobalVars.h"
+
+// Packet size of the fifo packets and total fifo size.
+#define FIFO_PACKET_SIZE 12
+#define FIFO_BUFFER_SIZE 1024
+
+// 131 LSB/deg/s = 250 deg/s
+#define TYPICAL_GYRO_SENSITIVITY 131
+// 16384 LSB/G = 2G
+#define TYPICAL_ACCEL_SENSITIVITY 16384.
+
+// Gyro scale conversion steps: LSB/°/s -> °/s -> step/°/s -> step/rad/s
+constexpr float GSCALE = ((32768. / TYPICAL_GYRO_SENSITIVITY) / 32768.) * (PI / 180.0);
+// Accel scale conversion steps: LSB/G -> G -> m/s^2
+constexpr float ASCALE = ((32768. / TYPICAL_ACCEL_SENSITIVITY) / 32768.) * SENSORS_GRAVITY_EARTH;
 
 void MPU6050Sensor::motionSetup()
 {
@@ -46,7 +54,7 @@ void MPU6050Sensor::motionSetup()
     // turn on while flip back to calibrate. then, flip again after 5 seconds.
     // TODO: Move calibration invoke after calibrate button on slimeVR server available
     imu.getAcceleration(&ax, &ay, &az);
-    float g_az = (float)az / 16384; // For 2G sensitivity
+    float g_az = (float)az / TYPICAL_ACCEL_SENSITIVITY;
     if (g_az < -0.75f)
     {
         ledManager.on();
@@ -110,7 +118,6 @@ void MPU6050Sensor::motionSetup()
 void MPU6050Sensor::motionLoop()
 {
     uint16_t fifoCount = imu.getFIFOCount();
-    uint16_t packetCount = fifoCount / FIFO_PACKET_SIZE;
     // m_Logger.debug("FIFO size: %d", fifoCount);
 
     // Fifo buffer is full, assuming overflow and resetting...
@@ -147,9 +154,17 @@ void MPU6050Sensor::motionLoop()
             Gxyz[1] = ((float)gy - m_Calibration.G_off[1]) * GSCALE;
             Gxyz[2] = ((float)gz - m_Calibration.G_off[2]) * GSCALE;
 
-            Axyz[0] = ((float)ax - m_Calibration.A_B[0]);
-            Axyz[1] = ((float)ay - m_Calibration.A_B[1]);
-            Axyz[2] = ((float)az - m_Calibration.A_B[2]);
+            Axyz[0] = (float)ax;
+            Axyz[1] = (float)ay;
+            Axyz[2] = (float)az;
+
+            float temp[3];
+            int i;
+            for (i = 0; i < 3; i++)
+                temp[i] = (Axyz[i] - m_Calibration.A_B[i]);
+            Axyz[0] = (m_Calibration.A_Ainv[0][0] * temp[0] + m_Calibration.A_Ainv[0][1] * temp[1] + m_Calibration.A_Ainv[0][2] * temp[2]) * ASCALE;
+            Axyz[1] = (m_Calibration.A_Ainv[1][0] * temp[0] + m_Calibration.A_Ainv[1][1] * temp[1] + m_Calibration.A_Ainv[1][2] * temp[2]) * ASCALE;
+            Axyz[2] = (m_Calibration.A_Ainv[2][0] * temp[0] + m_Calibration.A_Ainv[2][1] * temp[1] + m_Calibration.A_Ainv[2][2] * temp[2]) * ASCALE;
 
             vqf.update(Gxyz, Axyz);
 
@@ -167,52 +182,135 @@ void MPU6050Sensor::motionLoop()
     }
 }
 
+// void MPU6050Sensor::startCalibration(int calibrationType)
+// {
+//     ledManager.on();
+
+//     m_Logger.info("Put down the device and wait for baseline gyro reading calibration");
+//     delay(2000);
+//     ledManager.off();
+//     imu.CalibrateGyro(6);
+//     imu.CalibrateAccel(6);
+
+//     m_Logger.debug("Gathered baseline gyro reading");
+//     ledManager.blink(50);
+//     ledManager.blink(50);
+//     m_Logger.debug("Starting offset finder");
+
+//     // Calibrating accel
+//     imu.CalibrateAccel(10);
+//     m_Calibration.A_B[0] = imu.getXAccelOffset();
+//     m_Calibration.A_B[1] = imu.getYAccelOffset();
+//     m_Calibration.A_B[2] = imu.getZAccelOffset();
+
+//     ledManager.blink(50);
+//     ledManager.blink(50);
+
+//     // Calibrating gyro
+//     imu.CalibrateGyro(10);
+//     m_Calibration.G_off[0] = imu.getXGyroOffset();
+//     m_Calibration.G_off[1] = imu.getYGyroOffset();
+//     m_Calibration.G_off[2] = imu.getZGyroOffset();
+
+//     ledManager.blink(50);
+//     ledManager.blink(50);
+//     ledManager.blink(50);
+//     ledManager.blink(50);
+//     SlimeVR::Configuration::CalibrationConfig calibration;
+//     calibration.type = SlimeVR::Configuration::CalibrationConfigType::MPU6050;
+//     calibration.data.mpu6050 = m_Calibration;
+//     configuration.setCalibration(sensorId, calibration);
+//     configuration.save();
+
+//     ledManager.blink(50);
+//     ledManager.blink(50);
+//     ledManager.blink(50);
+//     ledManager.blink(50);
+
+//     m_Logger.info("Calibration finished");
+
+//     ledManager.off();
+// }
+
 void MPU6050Sensor::startCalibration(int calibrationType)
 {
     ledManager.on();
+    m_Logger.debug("Gathering raw data for device calibration...");
+    constexpr uint16_t calibrationSamples = 300;
+    // Reset values
+    Gxyz[0] = 0;
+    Gxyz[1] = 0;
+    Gxyz[2] = 0;
 
+    // Wait for sensor to calm down before calibration
     m_Logger.info("Put down the device and wait for baseline gyro reading calibration");
     delay(2000);
-    ledManager.off();
-    imu.CalibrateGyro(6);
-    imu.CalibrateAccel(6);
+    for (int i = 0; i < calibrationSamples; i++)
+    {
+        int16_t gx, gy, gz;
+        imu.getRotation(&gx, &gy, &gz);
+        Gxyz[0] += float(gx);
+        Gxyz[1] += float(gy);
+        Gxyz[2] += float(gz);
+    }
+    Gxyz[0] /= calibrationSamples;
+    Gxyz[1] /= calibrationSamples;
+    Gxyz[2] /= calibrationSamples;
 
-    m_Logger.debug("Gathered baseline gyro reading");
-    ledManager.blink(50);
-    ledManager.blink(50);
-    m_Logger.debug("Starting offset finder");
+#ifdef DEBUG_SENSOR
+    m_Logger.trace("Gyro calibration results: %f %f %f", Gxyz[0], Gxyz[1], Gxyz[2]);
+#endif
 
-    // Calibrating accel
-    imu.CalibrateAccel(10);
-    m_Calibration.A_B[0] = imu.getXAccelOffset();
-    m_Calibration.A_B[1] = imu.getYAccelOffset();
-    m_Calibration.A_B[2] = imu.getZAccelOffset();
+    Network::sendRawCalibrationData(Gxyz, CALIBRATION_TYPE_EXTERNAL_GYRO, 0);
+    m_Calibration.G_off[0] = Gxyz[0];
+    m_Calibration.G_off[1] = Gxyz[1];
+    m_Calibration.G_off[2] = Gxyz[2];
 
-    ledManager.blink(50);
-    ledManager.blink(50);
+    // Blink calibrating led before user should rotate the sensor
+    m_Logger.info("Gently rotate the device while it's gathering accelerometer and magnetometer data");
+    ledManager.pattern(15, 300, 3000 / 310);
+    float *calibrationDataAcc = (float *)malloc(calibrationSamples * 3 * sizeof(float));
+    for (int i = 0; i < calibrationSamples; i++)
+    {
+        ledManager.on();
+        int16_t ax, ay, az;
+        imu.getAcceleration(&ax, &ay, &az);
+        calibrationDataAcc[i * 3 + 0] = ax;
+        calibrationDataAcc[i * 3 + 1] = ay;
+        calibrationDataAcc[i * 3 + 2] = az;
+        Network::sendRawCalibrationData(calibrationDataAcc, CALIBRATION_TYPE_EXTERNAL_ACCEL, 0);
+        ledManager.off();
+        delay(250);
+    }
+    m_Logger.debug("Calculating calibration data...");
 
-    // Calibrating gyro
-    imu.CalibrateGyro(10);
-    m_Calibration.G_off[0] = imu.getXGyroOffset();
-    m_Calibration.G_off[1] = imu.getYGyroOffset();
-    m_Calibration.G_off[2] = imu.getZGyroOffset();
+    float A_BAinv[4][3];
+    CalculateCalibration(calibrationDataAcc, calibrationSamples, A_BAinv);
+    free(calibrationDataAcc);
+    m_Logger.debug("Finished Calculate Calibration data");
+    m_Logger.debug("Accelerometer calibration matrix:");
+    m_Logger.debug("{");
+    for (uint8_t i = 0; i < 3; i++)
+    {
+        m_Calibration.A_B[i] = A_BAinv[0][i];
+        m_Calibration.A_Ainv[0][i] = A_BAinv[1][i];
+        m_Calibration.A_Ainv[1][i] = A_BAinv[2][i];
+        m_Calibration.A_Ainv[2][i] = A_BAinv[3][i];
+        m_Logger.debug("  %f, %f, %f, %f", A_BAinv[0][i], A_BAinv[1][i], A_BAinv[2][i], A_BAinv[3][i]);
+    }
+    m_Logger.debug("}");
 
-    ledManager.blink(50);
-    ledManager.blink(50);
-    ledManager.blink(50);
-    ledManager.blink(50);
+    m_Logger.debug("Saving the calibration data");
+
     SlimeVR::Configuration::CalibrationConfig calibration;
     calibration.type = SlimeVR::Configuration::CalibrationConfigType::MPU6050;
     calibration.data.mpu6050 = m_Calibration;
     configuration.setCalibration(sensorId, calibration);
     configuration.save();
 
-    ledManager.blink(50);
-    ledManager.blink(50);
-    ledManager.blink(50);
-    ledManager.blink(50);
-
-    m_Logger.info("Calibration finished");
-
     ledManager.off();
+    Network::sendCalibrationFinished(CALIBRATION_TYPE_EXTERNAL_ALL, 0);
+    m_Logger.debug("Saved the calibration data");
+
+    m_Logger.info("Calibration data gathered");
 }
