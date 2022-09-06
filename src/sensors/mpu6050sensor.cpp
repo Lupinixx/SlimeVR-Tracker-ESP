@@ -101,7 +101,7 @@ void MPU6050Sensor::motionSetup()
     }
 
     // Enable digital low pass filter. Gyro and accel now output at 1Khz. Not sure yet which mode would be best. Higher would mean better low pass filter, but also higher delay. max = 6, off = 0 (at 0 the gyro can update at 8khz.)
-    imu.setDLPFMode(6);
+    imu.setDLPFMode(1);
 
     // Enable FIFO, and gyro + accel to write to FIFO
     imu.setFIFOEnabled(true);
@@ -109,8 +109,7 @@ void MPU6050Sensor::motionSetup()
     imu.setYGyroFIFOEnabled(true);
     imu.setZGyroFIFOEnabled(true);
     imu.setAccelFIFOEnabled(true);
-    imu.setFullScaleGyroRange(0);
-    imu.setRate(sampleRateDevicer);
+    imu.setRate(sampleRateDevider);
 
     configured = true;
 }
@@ -118,7 +117,7 @@ void MPU6050Sensor::motionSetup()
 void MPU6050Sensor::motionLoop()
 {
     uint16_t fifoCount = imu.getFIFOCount();
-    // m_Logger.debug("FIFO size: %d", fifoCount);
+    m_Logger.debug("FIFO size: %d", fifoCount);
 
     // Fifo buffer is full, assuming overflow and resetting...
     if (fifoCount == FIFO_BUFFER_SIZE)
@@ -167,13 +166,14 @@ void MPU6050Sensor::motionLoop()
             Axyz[2] = (m_Calibration.A_Ainv[2][0] * temp[0] + m_Calibration.A_Ainv[2][1] * temp[1] + m_Calibration.A_Ainv[2][2] * temp[2]) * ASCALE;
 
             vqf.update(Gxyz, Axyz);
-
+            
             innerI += FIFO_PACKET_SIZE;
         }
         outerI += fifoAmountToGet;
     }
     vqf.getQuat6D(q);
     quaternion.set(-q[2], q[1], q[3], q[0]);
+    quaternion *= sensorOffset;
 
     if (!OPTIMIZE_UPDATES || !lastQuatSent.equalsWithEpsilon(quaternion))
     {
