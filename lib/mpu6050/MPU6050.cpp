@@ -3283,7 +3283,8 @@ void MPU6050::CalibrateAccel(uint8_t Loops ) {
 }
 
 void MPU6050::PID(uint8_t ReadAddress, float kP,float kI, uint8_t Loops){
-	uint8_t SaveAddress = (ReadAddress == 0x3B)?((getDeviceID() < 0x38 )? 0x06:0x77):0x13;
+    uint8_t SaveAddress = (ReadAddress == 0x3B)? 0x06:0x13;
+	//uint8_t SaveAddress = (ReadAddress == 0x3B)?((getDeviceID() < 0x38 )? 0x06:0x77):0x13;
 
 	int16_t  Data;
 	float Reading;
@@ -3338,8 +3339,10 @@ void MPU6050::PID(uint8_t ReadAddress, float kP,float kI, uint8_t Loops){
 				Data = ((Data)&0xFFFE) |BitZero[i];	// Insert Bit0 Saved at beginning
 			} else Data = round((ITerm[i]) / 4);
 			I2Cdev::writeWords(devAddr, SaveAddress + (i * shift), 1, (uint16_t *)&Data);
+            
 		}
 	}
+    PrintActiveOffsets();
 	resetFIFO();
 	resetDMP();
 }
