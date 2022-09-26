@@ -57,7 +57,7 @@ private:
     uint8_t mpuIntStatus; // holds actual interrupt status byte from MPU
     uint8_t devStatus;    // return status after each device operation (0 = success, !0 = error)
     //Timing variables
-    uint8_t sampleRateDevider = 4;
+    uint8_t sampleRateDevider = 4; //4 means 1kh / 4 = 250hz update rate
     VQF vqf{(float)(sampleRateDevider) / 1000};
 
     SlimeVR::Configuration::MPU6050CalibrationConfig m_Calibration;
